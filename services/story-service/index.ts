@@ -24,16 +24,18 @@ export class StoryService {
 
     const photosResult = await db.query(
       `SELECT * FROM photos 
-       WHERE album_id = $1 
+       WHERE album_id = $1 AND is_flagged = false
        ORDER BY taken_at ASC NULLS LAST, created_at ASC`,
       [albumId]
     );
 
-    const photos = photosResult.rows;
+    let photos = photosResult.rows;
     
     if (photos.length === 0) {
       throw new Error('No photos in album to generate story');
     }
+
+    photos = this.filterDuplicatePhotos(photos);
 
     const defaultSettings: StorySettings = {
       toneIntensity: settings?.toneIntensity ?? 50,
@@ -88,6 +90,20 @@ export class StoryService {
       chapters,
       createdAt: new Date(),
     };
+  }
+
+  private filterDuplicatePhotos(photos: any[]): any[] {
+    const seen = new Set<string>();
+    const filtered: any[] = [];
+
+    for (const photo of photos) {
+      if (!seen.has(photo.id)) {
+        filtered.push(photo);
+        seen.add(photo.id);
+      }
+    }
+
+    return filtered;
   }
 
   private generateChapters(photos: any[], style: StoryStyle, settings: StorySettings): GeneratedChapter[] {
@@ -189,6 +205,8 @@ export class StoryService {
   }
 
   private generateChapterTitle(photos: any[], index: number, style: StoryStyle): string {
+    const locationName = this.extractLocationName(photos);
+    
     const titles: Record<StoryStyle, string[]> = {
       '温馨': ['温馨时刻', '爱的记录', '家人时光', '温情回忆'],
       '搞笑': ['欢乐瞬间', '趣味时刻', '爆笑回忆', '开心一刻'],
@@ -199,12 +217,34 @@ export class StoryService {
     };
 
     const styleTitles = titles[style] || titles['纪实'];
-    return `${index}. ${styleTitles[Math.floor(Math.random() * styleTitles.length)]}`;
+    const baseTitle = styleTitles[Math.floor(Math.random() * styleTitles.length)];
+    
+    if (locationName && style === '旅行') {
+      return `${index}. ${locationName}的${baseTitle}`;
+    }
+    
+    return `${index}. ${baseTitle}`;
   }
 
   private generateDescription(photos: any[], style: StoryStyle): string {
     const photoCount = photos.length;
+    const locationName = this.extractLocationName(photos);
+    const locationInfo = locationName ? `在${locationName}` : '';
+    
+    if (locationName) {
+      return `这一章节包含 ${photoCount} 张照片，${locationInfo}记录着美好的瞬间。`;
+    }
+    
     return `这一章节包含 ${photoCount} 张照片，记录着美好的瞬间。`;
+  }
+
+  private extractLocationName(photos: any[]): string | null {
+    for (const photo of photos) {
+      if (photo.location_data && photo.location_data.name) {
+        return photo.location_data.name;
+      }
+    }
+    return null;
   }
 
   private generateCaption(photo: any, style: StoryStyle): string {
@@ -225,11 +265,18 @@ export class StoryService {
     return result.rows[0] || null;
   }
 
-  async findByIdWithDetails(id: string): Promise<StoryWithDetails | null> {
+  async findByIdWithDetails(id: string, userId?: string): Promise<StoryWithDetails | null> {
     const story = await this.findById(id);
     
     if (!story) {
       return null;
+    }
+
+    if (userId) {
+      const hasPermission = await this.checkViewPermission(id, userId);
+      if (!hasPermission) {
+        throw new ForbiddenError('You do not have permission to view this story');
+      }
     }
 
     const [chaptersResult, versionsResult, collaboratorsResult] = await Promise.all([
@@ -320,8 +367,10 @@ export class StoryService {
       throw new NotFoundError('Story', id);
     }
 
-    if (story.user_id !== userId) {
-      throw new ForbiddenError('You do not have permission to update this story');
+    const hasPermission = await this.checkEditPermission(id, userId);
+
+    if (!hasPermission) {
+      throw new ForbiddenError('You do not have permission to edit this story. Only the owner and collaborators with edit/admin permission can make changes.');
     }
 
     const updates: string[] = [];
@@ -361,7 +410,62 @@ export class StoryService {
       values
     );
 
+    await this.createVersion(id, userId, 'Story updated');
+
     return result.rows[0];
+  }
+
+  private async checkEditPermission(storyId: string, userId: string): Promise<boolean> {
+    const storyResult = await db.query<Story>(
+      'SELECT user_id FROM stories WHERE id = $1',
+      [storyId]
+    );
+
+    if (storyResult.rows.length === 0) {
+      return false;
+    }
+
+    const story = storyResult.rows[0];
+
+    if (story.user_id === userId) {
+      return true;
+    }
+
+    const collabResult = await db.query(
+      'SELECT permission FROM collaborations WHERE story_id = $1 AND user_id = $2',
+      [storyId, userId]
+    );
+
+    if (collabResult.rows.length === 0) {
+      return false;
+    }
+
+    const permission = collabResult.rows[0].permission;
+    return permission === 'edit' || permission === 'admin';
+  }
+
+  private async checkViewPermission(storyId: string, userId: string): Promise<boolean> {
+    const storyResult = await db.query<Story>(
+      'SELECT user_id FROM stories WHERE id = $1',
+      [storyId]
+    );
+
+    if (storyResult.rows.length === 0) {
+      return false;
+    }
+
+    const story = storyResult.rows[0];
+
+    if (story.user_id === userId) {
+      return true;
+    }
+
+    const collabResult = await db.query(
+      'SELECT 1 FROM collaborations WHERE story_id = $1 AND user_id = $2',
+      [storyId, userId]
+    );
+
+    return collabResult.rows.length > 0;
   }
 
   async updateChapter(
@@ -383,8 +487,10 @@ export class StoryService {
       throw new NotFoundError('Story', storyId);
     }
 
-    if (story.user_id !== userId) {
-      throw new ForbiddenError('You do not have permission to update this story');
+    const hasPermission = await this.checkEditPermission(storyId, userId);
+
+    if (!hasPermission) {
+      throw new ForbiddenError('You do not have permission to edit this story. Only the owner and collaborators with edit/admin permission can make changes.');
     }
 
     const updates: string[] = [];
@@ -445,6 +551,8 @@ export class StoryService {
     if (result.rows.length === 0) {
       throw new NotFoundError('Chapter', chapterId);
     }
+
+    await this.createVersion(storyId, userId, `Chapter "${data.title || chapterId}" updated`);
 
     return result.rows[0];
   }

@@ -25,7 +25,10 @@ export class ExportService {
 
     const story = storyResult.rows[0];
 
-    if (story.user_id !== userId) {
+    const hasPermission = story.user_id === userId || 
+                         (await this.isCollaborator(storyId, userId, 'view'));
+
+    if (!hasPermission) {
       throw new ForbiddenError('You do not have permission to export this story');
     }
 
@@ -43,6 +46,30 @@ export class ExportService {
     });
 
     return exportJob;
+  }
+
+  private async isCollaborator(storyId: string, userId: string, requiredPermission?: string): Promise<boolean> {
+    const result = await db.query(
+      'SELECT permission FROM collaborations WHERE story_id = $1 AND user_id = $2',
+      [storyId, userId]
+    );
+    
+    if (result.rows.length === 0) {
+      return false;
+    }
+
+    if (!requiredPermission) {
+      return true;
+    }
+
+    const permissionHierarchy: Record<string, number> = {
+      'view': 1,
+      'edit': 2,
+      'admin': 3
+    };
+
+    const userPermission = result.rows[0].permission;
+    return permissionHierarchy[userPermission] >= permissionHierarchy[requiredPermission];
   }
 
   private async processExport(exportId: string): Promise<void> {
@@ -127,7 +154,10 @@ export class ExportService {
 
     const story = storyResult.rows[0];
 
-    if (story.user_id !== userId) {
+    const hasPermission = story.user_id === userId || 
+                         (await this.isCollaborator(storyId, userId, 'view'));
+
+    if (!hasPermission) {
       throw new ForbiddenError('You do not have permission to share this story');
     }
 
@@ -136,9 +166,11 @@ export class ExportService {
               COALESCE(json_agg(
                 json_build_object(
                   'url', p.url,
-                  'caption', cp.caption
+                  'caption', cp.caption,
+                  'location', p.location_data,
+                  'isFlagged', p.is_flagged
                 )
-              ) FILTER (WHERE p.id IS NOT NULL), '[]') as photos
+              ) FILTER (WHERE p.id IS NOT NULL AND p.is_flagged = false), '[]') as photos
        FROM chapters c
        LEFT JOIN chapter_photos cp ON c.id = cp.chapter_id
        LEFT JOIN photos p ON cp.photo_id = p.id
@@ -153,17 +185,21 @@ export class ExportService {
       version: story.current_version,
       title: story.title || 'Untitled Story',
       style: story.style,
-      chapters: chaptersResult.rows.map(row => ({
-        title: row.title || '',
-        description: row.description || undefined,
-        coverPhotoUrl: row.photos[0]?.url || undefined,
-        narration: row.narration || undefined,
-        postcard: row.postcard || undefined,
-        photos: (row.photos || []).map((photo: any) => ({
-          url: photo.url,
-          caption: photo.caption,
-        })),
-      })),
+      chapters: chaptersResult.rows.map(row => {
+        const filteredPhotos = (row.photos || []).filter((photo: any) => !photo.isFlagged);
+        
+        return {
+          title: row.title || '',
+          description: row.description || undefined,
+          coverPhotoUrl: filteredPhotos.length > 0 ? filteredPhotos[0].url : undefined,
+          narration: row.narration || undefined,
+          postcard: row.postcard || undefined,
+          photos: filteredPhotos.map((photo: any) => ({
+            url: photo.url,
+            caption: photo.caption,
+          })),
+        };
+      }),
       metadata: {
         createdAt: story.created_at,
         generatedBy: 'story-service',
@@ -190,7 +226,10 @@ export class ExportService {
 
     const story = storyResult.rows[0];
 
-    if (story.user_id !== userId) {
+    const hasPermission = story.user_id === userId || 
+                         (await this.isCollaborator(storyId, userId, 'view'));
+
+    if (!hasPermission) {
       throw new ForbiddenError('You do not have permission to print this story');
     }
 
@@ -199,9 +238,11 @@ export class ExportService {
               COALESCE(json_agg(
                 json_build_object(
                   'url', p.url,
-                  'caption', cp.caption
+                  'caption', cp.caption,
+                  'isFlagged', p.is_flagged,
+                  'location', p.location_data
                 )
-              ) FILTER (WHERE p.id IS NOT NULL), '[]') as photos
+              ) FILTER (WHERE p.id IS NOT NULL AND p.is_flagged = false), '[]') as photos
        FROM chapters c
        LEFT JOIN chapter_photos cp ON c.id = cp.chapter_id
        LEFT JOIN photos p ON cp.photo_id = p.id
@@ -219,7 +260,8 @@ export class ExportService {
       title: story.title || 'Untitled Story',
       style: story.style,
       chapters: chaptersResult.rows.map(row => {
-        const photos = includePhotos ? (row.photos || []) : [];
+        const filteredPhotos = (row.photos || []).filter((photo: any) => !photo.isFlagged);
+        const photos = includePhotos ? filteredPhotos : [];
         const chapterPages = Math.ceil(Math.max(1, photos.length) / 2);
 
         const chapter = {

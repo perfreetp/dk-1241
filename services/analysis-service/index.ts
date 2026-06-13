@@ -14,8 +14,10 @@ export class AnalysisService {
 
     const photos = photosResult.rows;
     
+    const duplicateGroups = this.detectDuplicateGroups(photos);
+    
     const analysisResults = await Promise.all(
-      photos.map(photo => this.analyzePhoto(photo))
+      photos.map(photo => this.analyzePhoto(photo, duplicateGroups))
     );
 
     const timeline = this.clusterByTimeline(photos);
@@ -48,10 +50,80 @@ export class AnalysisService {
       timeline,
       locations,
       people,
+      duplicateGroups,
     };
   }
 
-  private async analyzePhoto(photo: Photo): Promise<{
+  private detectDuplicateGroups(photos: Photo[]): Map<string, string[]> {
+    const duplicateGroups = new Map<string, string[]>();
+    const processed = new Set<string>();
+
+    for (let i = 0; i < photos.length; i++) {
+      if (processed.has(photos[i].id)) continue;
+
+      const group: string[] = [photos[i].id];
+
+      for (let j = i + 1; j < photos.length; j++) {
+        if (processed.has(photos[j].id)) continue;
+
+        if (this.isDuplicate(photos[i], photos[j])) {
+          group.push(photos[j].id);
+          processed.add(photos[j].id);
+        }
+      }
+
+      if (group.length > 1) {
+        group.forEach(id => processed.add(id));
+        duplicateGroups.set(photos[i].id, group);
+      }
+    }
+
+    return duplicateGroups;
+  }
+
+  private isDuplicate(photo1: Photo, photo2: Photo): boolean {
+    if (photo1.url === photo2.url) return true;
+
+    const timeDiff = Math.abs(
+      (new Date(photo1.taken_at || 0).getTime()) - 
+      (new Date(photo2.taken_at || 0).getTime())
+    );
+    
+    if (photo1.taken_at && photo2.taken_at && timeDiff < 5000) {
+      const loc1 = photo1.location_data;
+      const loc2 = photo2.location_data;
+      
+      if (loc1 && loc2) {
+        const distance = this.calculateDistance(
+          loc1.lat, loc1.lng,
+          loc2.lat, loc2.lng
+        );
+        return distance < 100;
+      }
+      
+      return true;
+    }
+
+    return false;
+  }
+
+  private calculateDistance(lat1: number, lng1: number, lat2: number, lng2: number): number {
+    const R = 6371;
+    const dLat = this.toRad(lat2 - lat1);
+    const dLng = this.toRad(lng2 - lng1);
+    const a = 
+      Math.sin(dLat/2) * Math.sin(dLat/2) +
+      Math.cos(this.toRad(lat1)) * Math.cos(this.toRad(lat2)) * 
+      Math.sin(dLng/2) * Math.sin(dLng/2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    return R * c;
+  }
+
+  private toRad(deg: number): number {
+    return deg * (Math.PI / 180);
+  }
+
+  private async analyzePhoto(photo: Photo, duplicateGroups: Map<string, string[]>): Promise<{
     id: string;
     analysis: PhotoAnalysisResult;
     faces: FaceData[];
@@ -75,7 +147,7 @@ export class AnalysisService {
     const faces: FaceData[] = photo.face_data || [];
     const emotions = photo.emotion_tags || this.inferEmotions(photo);
     const location: LocationData | null = photo.location_data || null;
-    const duplicates = this.findDuplicates(photo);
+    const duplicates = duplicateGroups.get(photo.id) || [];
 
     return {
       id: photo.id,
@@ -134,10 +206,6 @@ export class AnalysisService {
     ];
     
     return emotionSets[Math.floor(Math.random() * emotionSets.length)];
-  }
-
-  private findDuplicates(photo: Photo): string[] {
-    return [];
   }
 
   private clusterByTimeline(photos: Photo[]): TimelineCluster[] {

@@ -175,6 +175,13 @@ export class VersionService {
       await client.query('DELETE FROM chapter_photos WHERE chapter_id IN (SELECT id FROM chapters WHERE story_id = $1)', [storyId]);
       await client.query('DELETE FROM chapters WHERE story_id = $1', [storyId]);
 
+      if (content.title) {
+        await client.query(
+          'UPDATE stories SET title = $1 WHERE id = $2',
+          [content.title, storyId]
+        );
+      }
+
       for (let i = 0; i < content.chapters.length; i++) {
         const chapterData = content.chapters[i];
         const chapterId = chapterData.id || uuidv4();
