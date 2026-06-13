@@ -142,6 +142,8 @@ export class AlbumService {
       thumbnail_url?: string;
       exif_data?: Record<string, any>;
       taken_at?: Date;
+      location_data?: Record<string, any>;
+      is_flagged?: boolean;
     }
   ): Promise<Photo> {
     const album = await this.findById(albumId);
@@ -155,8 +157,8 @@ export class AlbumService {
     }
 
     const result = await db.query<Photo>(
-      `INSERT INTO photos (album_id, url, thumbnail_url, exif_data, taken_at)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO photos (album_id, url, thumbnail_url, exif_data, taken_at, location_data, is_flagged)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
        RETURNING *`,
       [
         albumId,
@@ -164,6 +166,8 @@ export class AlbumService {
         data.thumbnail_url || null,
         data.exif_data ? JSON.stringify(data.exif_data) : null,
         data.taken_at || null,
+        data.location_data ? JSON.stringify(data.location_data) : null,
+        data.is_flagged || false,
       ]
     );
 
@@ -178,6 +182,8 @@ export class AlbumService {
       thumbnail_url?: string;
       exif_data?: Record<string, any>;
       taken_at?: Date;
+      location_data?: Record<string, any>;
+      is_flagged?: boolean;
     }>
   ): Promise<Photo[]> {
     const album = await this.findById(albumId);
@@ -199,8 +205,8 @@ export class AlbumService {
 
       for (const photo of photos) {
         const result = await client.query<Photo>(
-          `INSERT INTO photos (album_id, url, thumbnail_url, exif_data, taken_at)
-           VALUES ($1, $2, $3, $4, $5)
+          `INSERT INTO photos (album_id, url, thumbnail_url, exif_data, taken_at, location_data, is_flagged)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)
            RETURNING *`,
           [
             albumId,
@@ -208,6 +214,8 @@ export class AlbumService {
             photo.thumbnail_url || null,
             photo.exif_data ? JSON.stringify(photo.exif_data) : null,
             photo.taken_at || null,
+            photo.location_data ? JSON.stringify(photo.location_data) : null,
+            photo.is_flagged || false,
           ]
         );
         insertedPhotos.push(result.rows[0]);

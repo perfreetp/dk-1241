@@ -1,7 +1,7 @@
 import db from '../../shared/common/database';
 import { 
   Story, Chapter, ChapterPhoto, StoryWithDetails, ChapterWithPhotos,
-  StoryStyle, StorySettings, StoryContent, StoryGenerationResult, GeneratedChapter 
+  StoryStyle, StorySettings, StoryContent, StoryGenerationResult, GeneratedChapter, DuplicateGroup
 } from '../../shared/models';
 import { NotFoundError, ForbiddenError } from '../../shared/common';
 import { v4 as uuidv4 } from 'uuid';
@@ -11,7 +11,8 @@ export class StoryService {
     userId: string,
     albumId: string,
     style: StoryStyle,
-    settings?: StorySettings
+    settings?: StorySettings,
+    duplicateGroups?: DuplicateGroup[]
   ): Promise<StoryGenerationResult> {
     const albumResult = await db.query(
       'SELECT * FROM albums WHERE id = $1 AND user_id = $2',
@@ -35,7 +36,7 @@ export class StoryService {
       throw new Error('No photos in album to generate story');
     }
 
-    photos = this.filterDuplicatePhotos(photos);
+    photos = this.filterDuplicatePhotos(photos, duplicateGroups);
 
     const defaultSettings: StorySettings = {
       toneIntensity: settings?.toneIntensity ?? 50,
@@ -92,14 +93,34 @@ export class StoryService {
     };
   }
 
-  private filterDuplicatePhotos(photos: any[]): any[] {
+  private filterDuplicatePhotos(photos: any[], duplicateGroups?: DuplicateGroup[]): any[] {
+    if (!duplicateGroups || duplicateGroups.length === 0) {
+      return photos;
+    }
+
+    const recommendedPhotoIds = new Set<string>();
+    for (const group of duplicateGroups) {
+      recommendedPhotoIds.add(group.recommendedKeep);
+    }
+
     const seen = new Set<string>();
     const filtered: any[] = [];
 
     for (const photo of photos) {
-      if (!seen.has(photo.id)) {
+      if (seen.has(photo.id)) continue;
+
+      if (recommendedPhotoIds.has(photo.id)) {
         filtered.push(photo);
         seen.add(photo.id);
+      } else {
+        const inDuplicateGroup = duplicateGroups.some(
+          g => g.photoId === photo.id || g.duplicateIds.includes(photo.id)
+        );
+        
+        if (!inDuplicateGroup) {
+          filtered.push(photo);
+          seen.add(photo.id);
+        }
       }
     }
 

@@ -170,7 +170,7 @@ export class ExportService {
                   'location', p.location_data,
                   'isFlagged', p.is_flagged
                 )
-              ) FILTER (WHERE p.id IS NOT NULL AND p.is_flagged = false), '[]') as photos
+              ) FILTER (WHERE p.id IS NOT NULL AND p.is_flagged = false ORDER BY cp.order_index), '[]') as photos
        FROM chapters c
        LEFT JOIN chapter_photos cp ON c.id = cp.chapter_id
        LEFT JOIN photos p ON cp.photo_id = p.id
@@ -188,9 +188,11 @@ export class ExportService {
       chapters: chaptersResult.rows.map(row => {
         const filteredPhotos = (row.photos || []).filter((photo: any) => !photo.isFlagged);
         
+        const locationName = this.extractLocationFromPhotos(filteredPhotos);
+        
         return {
           title: row.title || '',
-          description: row.description || undefined,
+          description: this.generateLocationDescription(row.description, locationName),
           coverPhotoUrl: filteredPhotos.length > 0 ? filteredPhotos[0].url : undefined,
           narration: row.narration || undefined,
           postcard: row.postcard || undefined,
@@ -242,7 +244,7 @@ export class ExportService {
                   'isFlagged', p.is_flagged,
                   'location', p.location_data
                 )
-              ) FILTER (WHERE p.id IS NOT NULL AND p.is_flagged = false), '[]') as photos
+              ) FILTER (WHERE p.id IS NOT NULL AND p.is_flagged = false ORDER BY cp.order_index), '[]') as photos
        FROM chapters c
        LEFT JOIN chapter_photos cp ON c.id = cp.chapter_id
        LEFT JOIN photos p ON cp.photo_id = p.id
@@ -263,10 +265,11 @@ export class ExportService {
         const filteredPhotos = (row.photos || []).filter((photo: any) => !photo.isFlagged);
         const photos = includePhotos ? filteredPhotos : [];
         const chapterPages = Math.ceil(Math.max(1, photos.length) / 2);
+        const locationName = this.extractLocationFromPhotos(filteredPhotos);
 
         const chapter = {
           title: row.title || '',
-          description: row.description || undefined,
+          description: this.generateLocationDescription(row.description, locationName),
           coverPhotoUrl: includePhotos && photos.length > 0 ? photos[0].url : undefined,
           narration: row.narration || undefined,
           photos: photos.map((photo: any, idx: number) => {
@@ -390,6 +393,34 @@ export class ExportService {
 </html>`;
 
     return html;
+  }
+
+  private extractLocationFromPhotos(photos: any[]): string | null {
+    for (const photo of photos) {
+      if (photo.location && photo.location.name) {
+        return photo.location.name;
+      }
+    }
+    return null;
+  }
+
+  private generateLocationDescription(existingDescription: string | null, locationName: string | null): string | undefined {
+    if (!existingDescription && !locationName) {
+      return undefined;
+    }
+    
+    if (existingDescription && locationName) {
+      if (existingDescription.includes(locationName)) {
+        return existingDescription;
+      }
+      return `在${locationName}，${existingDescription}`;
+    }
+    
+    if (locationName) {
+      return `在${locationName}${existingDescription ? '，' + existingDescription : ''}`;
+    }
+    
+    return existingDescription || undefined;
   }
 }
 

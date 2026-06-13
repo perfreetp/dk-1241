@@ -262,10 +262,11 @@ export interface PhotoAnalysisResponse {
   timeline: TimelineCluster[];
   locations: LocationCluster[];
   people: PersonCluster[];
-  duplicateGroups: Map<string, string[]>;
+  duplicateGroups: DuplicateGroup[];
 }
 
 export interface DuplicateGroup {
+  groupId: string;
   photoId: string;
   duplicateIds: string[];
   recommendedKeep: string;

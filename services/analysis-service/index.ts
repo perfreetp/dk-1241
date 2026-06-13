@@ -5,6 +5,14 @@ import {
 } from '../../shared/models';
 import { v4 as uuidv4 } from 'uuid';
 
+interface DuplicateGroupResult {
+  groupId: string;
+  photoId: string;
+  duplicateIds: string[];
+  recommendedKeep: string;
+  reason: string;
+}
+
 export class AnalysisService {
   async analyzeAlbum(albumId: string): Promise<PhotoAnalysisResponse> {
     const photosResult = await db.query<Photo>(
@@ -14,10 +22,10 @@ export class AnalysisService {
 
     const photos = photosResult.rows;
     
-    const duplicateGroups = this.detectDuplicateGroups(photos);
+    const { duplicateGroupsMap, duplicateGroupResults } = this.detectDuplicateGroups(photos);
     
     const analysisResults = await Promise.all(
-      photos.map(photo => this.analyzePhoto(photo, duplicateGroups))
+      photos.map(photo => this.analyzePhoto(photo, duplicateGroupsMap))
     );
 
     const timeline = this.clusterByTimeline(photos);
@@ -50,35 +58,94 @@ export class AnalysisService {
       timeline,
       locations,
       people,
-      duplicateGroups,
+      duplicateGroups: duplicateGroupResults,
     };
   }
 
-  private detectDuplicateGroups(photos: Photo[]): Map<string, string[]> {
-    const duplicateGroups = new Map<string, string[]>();
+  private detectDuplicateGroups(photos: Photo[]): { 
+    duplicateGroupsMap: Map<string, string[]>; 
+    duplicateGroupResults: DuplicateGroupResult[];
+  } {
+    const duplicateGroupsMap = new Map<string, string[]>();
+    const duplicateGroupResults: DuplicateGroupResult[] = [];
     const processed = new Set<string>();
+    let groupCounter = 0;
 
     for (let i = 0; i < photos.length; i++) {
       if (processed.has(photos[i].id)) continue;
 
       const group: string[] = [photos[i].id];
+      const groupPhotos: Photo[] = [photos[i]];
 
       for (let j = i + 1; j < photos.length; j++) {
         if (processed.has(photos[j].id)) continue;
 
         if (this.isDuplicate(photos[i], photos[j])) {
           group.push(photos[j].id);
+          groupPhotos.push(photos[j]);
           processed.add(photos[j].id);
         }
       }
 
       if (group.length > 1) {
         group.forEach(id => processed.add(id));
-        duplicateGroups.set(photos[i].id, group);
+        duplicateGroupsMap.set(photos[i].id, group);
+        
+        const recommendedKeep = this.selectRecommendedPhoto(groupPhotos);
+        const reason = this.generateDuplicateReason(groupPhotos);
+        
+        duplicateGroupResults.push({
+          groupId: `group_${++groupCounter}`,
+          photoId: photos[i].id,
+          duplicateIds: group.slice(1),
+          recommendedKeep: recommendedKeep.id,
+          reason: reason,
+        });
       }
     }
 
-    return duplicateGroups;
+    return { duplicateGroupsMap, duplicateGroupResults };
+  }
+
+  private selectRecommendedPhoto(photos: Photo[]): Photo {
+    let bestPhoto = photos[0];
+    let bestScore = 0;
+
+    for (const photo of photos) {
+      let score = 0;
+      
+      if (photo.exif_data) score += 20;
+      if (photo.location_data) score += 15;
+      if (photo.face_data && photo.face_data.length > 0) score += 15;
+      
+      if (photo.analysis_result) {
+        score += (photo.analysis_result as any).quality || 0;
+      }
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestPhoto = photo;
+      }
+    }
+
+    return bestPhoto;
+  }
+
+  private generateDuplicateReason(photos: Photo[]): string {
+    if (photos.length === 2) {
+      const photo = photos[0];
+      if (photo.taken_at && photos[1].taken_at) {
+        const timeDiff = Math.abs(
+          new Date(photo.taken_at).getTime() - 
+          new Date(photos[1].taken_at).getTime()
+        );
+        if (timeDiff < 1000) {
+          return '连拍照片，保留质量最佳的一张';
+        }
+      }
+      return '拍摄时间接近的相似照片';
+    }
+    return `共${photos.length}张相似照片，保留质量最佳的一张`;
   }
 
   private isDuplicate(photo1: Photo, photo2: Photo): boolean {
